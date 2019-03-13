@@ -1,0 +1,9 @@
+[package]
+name = "ipnet"
+version = "0.1.0"
+authors = ["teruya <abas.trace.on@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+ipnetwork = "0.12.7"
+mio = "0.6.11"
