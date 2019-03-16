@@ -6,7 +6,6 @@ use mio::tcp::TcpListener;
 use std::net::SocketAddr;
 use std::env;
 
-// This will be later used to identify the server on the event loop
 const SERVER: Token = Token(0);
 
 struct TCPServer {
