@@ -78,12 +78,11 @@ impl TCPServer {
     }
 
     fn make_response(buffer: &[u8], nbytes: &usize) -> Result<Vec<u8>, Error> {
-        let mut response = Vec::new();
-
         let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])").unwrap();
         let captures = match http_pattern.captures(str::from_utf8(&buffer[..*nbytes]).unwrap()) {
             Some(cap) => cap,
             None => {
+                let mut response = Vec::new();
                 response.append(&mut "HTTP/1.0 400 Bad Request\r\n".to_string().into_bytes());
                 response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
                 response.append(&mut "\r\n".to_string().into_bytes());
@@ -100,6 +99,7 @@ impl TCPServer {
                 Ok(file) => file,
                 Err(_) => {
                     // パーミッションエラーなどもここに含まれるが手抜きしてnot foundにしている
+                    let mut response = Vec::new();
                     response.append(&mut "HTTP/1.0 404 Not Found\r\n".to_string().into_bytes());
                     response.append(&mut "Server: mio webserver\r\n\r\n".to_string().into_bytes());
                     return Ok(response);
@@ -109,6 +109,7 @@ impl TCPServer {
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf)?;
 
+            let mut response = Vec::new();
             response.append(&mut "HTTP/1.0 200 OK\r\n".to_string().into_bytes());
             response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
             response.append(&mut "\r\n".to_string().into_bytes());
@@ -116,6 +117,7 @@ impl TCPServer {
             return Ok(response);
         }
         // サポートしていないHTTPメソッド
+        let mut response = Vec::new();
         response.append(&mut "HTTP/1.0 501 Not Implemented\r\n".to_string().into_bytes());
         response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
         response.append(&mut "\r\n".to_string().into_bytes());
