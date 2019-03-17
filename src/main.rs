@@ -60,20 +60,13 @@ impl TCPServer {
 
                     Token(conn_id) => {
                         if let Some(stream) = self.connections.get_mut(&conn_id) {
-                            // if let Some(_) = TCPServer::handle_connection(stream, &conn_id).err() {
-                            //     stream.write("HTTP/1.0 500 Internal Server Error\r\n".as_bytes())?;
-                            //     stream.write("Server: mio webserver\r\n".as_bytes())?;
-                            //     stream.write("\r\n".as_bytes())?;
-                            //     stream.flush()?;
-                            // };
-
                             println!("conn_id: {}", conn_id);
                             let mut buffer = [0u8; 512];
                             let nbytes = stream.read(&mut buffer)?;
 
                             if nbytes != 0 {
                                 let response = TCPServer::make_response(&buffer, &nbytes).unwrap();
-                                stream.write(response)?;
+                                stream.write(&response)?;
                                 stream.flush()?;
                             }
                             self.connections.remove(&conn_id);
@@ -85,15 +78,15 @@ impl TCPServer {
     }
 
     fn make_response(buffer: &[u8], nbytes: &usize) -> Result<Vec<u8>, Error> {
-        let mut response = String::new();
+        let mut response = Vec::new();
 
         let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])").unwrap();
         let captures = match http_pattern.captures(str::from_utf8(&buffer[..*nbytes]).unwrap()) {
             Some(cap) => cap,
             None => {
-                response.append("HTTP/1.0 400 Bad Request\r\n".as_bytes());
-                response.append("Server: mio webserver\r\n".as_bytes());
-                response.append("\r\n".as_bytes());
+                response.append(&mut "HTTP/1.0 400 Bad Request\r\n".to_string().into_bytes());
+                response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
+                response.append(&mut "\r\n".to_string().into_bytes());
                 return Ok(response);
             }
         };
@@ -107,8 +100,8 @@ impl TCPServer {
                 Ok(file) => file,
                 Err(_) => {
                     // パーミッションエラーなどもここに含まれるが手抜きしてnot foundにしている
-                    response.append("HTTP/1.0 404 Not Found\r\n".as_bytes());
-                    response.append("Server: mio webserver\r\n\r\n".as_bytes());
+                    response.append(&mut "HTTP/1.0 404 Not Found\r\n".to_string().into_bytes());
+                    response.append(&mut "Server: mio webserver\r\n\r\n".to_string().into_bytes());
                     return Ok(response);
                 }
             };
@@ -116,17 +109,17 @@ impl TCPServer {
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf)?;
 
-            response.append("HTTP/1.0 200 OK\r\n".as_bytes());
-            response.append("Server: mio webserver\r\n".as_bytes());
-            response.append("\r\n".as_bytes());
-            response.append(&buf);
-        } else {
-            // サポートしていないHTTPメソッド
-            response.append("HTTP/1.0 501 Not Implemented\r\n".as_bytes());
-            response.append("Server: mio webserver\r\n".as_bytes());
-            response.append("\r\n".as_bytes());
+            response.append(&mut "HTTP/1.0 200 OK\r\n".to_string().into_bytes());
+            response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
+            response.append(&mut "\r\n".to_string().into_bytes());
+            response.append(&mut buf);
+            return Ok(response);
         }
-        Ok(response)
+        // サポートしていないHTTPメソッド
+        response.append(&mut "HTTP/1.0 501 Not Implemented\r\n".to_string().into_bytes());
+        response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
+        response.append(&mut "\r\n".to_string().into_bytes());
+        return Ok(response);
     }
 }
 
