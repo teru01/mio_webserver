@@ -12,21 +12,25 @@ use regex::Regex;
 
 
 const SERVER: Token = Token(0);
-const WEBROOT: &str = "/Users/mirai/works/rust/ipnet/webroot";
+const WEBROOT: &str = "/webroot";
 
 struct TCPServer {
     address: SocketAddr,
+    connections: HashMap<usize, TcpStream>,
+    next_connection_id: usize
 }
 
 impl TCPServer {
     fn new(addr: &str) -> Self {
         let address = addr.parse().unwrap();
         TCPServer {
-            address
+            address,
+            connections: HashMap::new(),
+            next_connection_id: 1
         }
     }
 
-    fn run(&mut self) {
+    fn run(&mut self) -> Result<(), Error> {
         let server = TcpListener::bind(&self.address).expect("Failed to bind address");
         // linuxなのでバックエンドにはepollシステムコールを利用
         let poll = Poll::new().unwrap();
@@ -43,8 +47,6 @@ impl TCPServer {
         // イベントを詰め込む
         let mut events = Events::with_capacity(1024);
 
-        let mut connection_id = 0;
-        let mut connections = HashMap::new();
         loop {
             //現在のスレッドをブロックしてイベントを待つ。
             // 一回のpollに対して複数のeventが発行される場合がある。socketが読み書き可能になると1つの読み書き可能または読み可能と書き可能の2つ
@@ -54,20 +56,25 @@ impl TCPServer {
                     SERVER => {
                         let (stream, remote) = server.accept().expect("Failed to accept connection");
                         println!("Connection from {}", &remote);
-                        connection_id += 1;
 
-                        let token = Token(connection_id);
-                        let hoge = &stream;
-                        poll.register(&stream, token, Ready::readable(), PollOpt::level());
-                        if let Some(_) = connections.insert(connection_id, stream){
+                        let token = Token(self.next_connection_id);
+                        poll.register(&stream, token, Ready::readable(), PollOpt::edge());
+
+                        if let Some(_) = self.connections.insert(self.next_connection_id, stream){
                             // HashMapは既存のキーで値が更新されると更新前の値を返す
                             panic!("Failed to register connection");
                         }
+                        self.next_connection_id += 1;
                     }
 
                     Token(conn_id) => {
-                        if let Some(stream) = connections.get_mut(&conn_id) {
-                            handle_connection(stream).expect("http server error");
+                        // let stream = match self.connections.get_mut(&conn_id) {
+                        //     Some(stream) => stream,
+                        //     _ => return Ok(()),
+                        // };
+                        if let Some(stream) = self.connections.get_mut(&conn_id) {
+                            TCPServer::handle_connection(stream, &conn_id).expect("http server error");  //ここでselfへの&mutが作られるのでだめ
+                            self.connections.remove(&conn_id);
                         }
                     }
 
@@ -77,52 +84,56 @@ impl TCPServer {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn handle_connection(stream: &mut TcpStream, conn_id: &usize) -> Result<(), Error> {
+        println!("conn_id: {}", conn_id);
+        let mut buffer = [0u8; 512];
+        let nbytes = stream.read(&mut buffer)?;
+        if nbytes == 0 {
+            return Ok(());
+        }
+
+        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])").unwrap();
+        let captures = http_pattern.captures(str::from_utf8(&buffer[..nbytes]).unwrap()).ok_or("invalid request").unwrap();
+
+        let method = captures.get(1).unwrap().as_str();
+        let path = &format!("{}{}{}", env::current_dir().unwrap().display(), WEBROOT, captures.get(2).unwrap().as_str());
+        let _version = captures.get(3).unwrap().as_str();
+
+        if method == "GET" {
+            println!("path: {}", path);
+            let file = match fs::File::open(path) {
+                Ok(file) => file,
+                // Error(Err) => {
+                //     stream.write("HTTP/1.0 404 NOT FOUND\r\n".as_bytes())?;
+                //     stream.write("Server: mio webserver\r\n\r\n".as_bytes())?;
+                //     stream.flush()?;
+                //     return Ok(());
+                // }
+                _ => {
+                    return Ok(());
+                }
+            };
+            let mut reader = BufReader::new(file);
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)?;
+
+            stream.write("HTTP/1.0 200 OK\r\n".as_bytes())?;
+            stream.write("Server: mio webserver\r\n".as_bytes())?;
+            stream.write("\r\n".as_bytes())?;
+            stream.write(&buf)?;
+            stream.flush()?;
+        } else if method == "HEAD" {
+        } else {
+        }
+        Ok(())
     }
 }
 
 
-fn handle_connection(stream: &mut TcpStream) -> Result<(), Error> {
 
-    let mut buffer = [0u8; 512];
-    let nbytes = stream.read(&mut buffer)?;
-    if nbytes == 0 {
-        return Ok(());
-    }
-
-    let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])").unwrap();
-    let captures = http_pattern.captures(str::from_utf8(&buffer[..nbytes]).unwrap()).ok_or("invalid request").unwrap();
-
-    let method = captures.get(1).unwrap().as_str();
-    let path = format!("{}{}", WEBROOT, captures.get(2).unwrap().as_str());
-    let _version = captures.get(3).unwrap().as_str();
-
-    if method == "GET" {
-        println!("path: {}", path);
-        let file = match fs::File::open(path) {
-            Ok(file) => file,
-            // Error(Err) => {
-            //     stream.write("HTTP/1.0 404 NOT FOUND\r\n".as_bytes())?;
-            //     stream.write("Server: mio webserver\r\n\r\n".as_bytes())?;
-            //     stream.flush()?;
-            //     return Ok(());
-            // }
-            _ => {
-                return Ok(());
-            }
-        };
-        let mut reader = BufReader::new(file);
-        let mut buf = Vec::new();
-        reader.read_to_end(&mut buf)?;
-
-        stream.write("HTTP/1.0 200 OK\r\n".as_bytes())?;
-        stream.write("Server: mio webserver\r\n\r\n".as_bytes())?;
-        stream.write(&buf)?;
-        stream.flush()?;
-    } else if method == "HEAD" {
-    } else {
-    }
-    Ok(())
-}
 
 fn main() {
     let args:Vec<String> = env::args().collect();
