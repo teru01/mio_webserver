@@ -9,7 +9,7 @@ $ cargo run [addr]:[port]
 
 then connect via telnet, nc or browser
 
-(https://user-images.githubusercontent.com/27873650/54591218-24c08c00-4a6d-11e9-9ead-49494b0adffc.png)
+![sheep](https://user-images.githubusercontent.com/27873650/54591218-24c08c00-4a6d-11e9-9ead-49494b0adffc.png "sheep")
 
 # Specification
 
