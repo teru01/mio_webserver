@@ -14,16 +14,16 @@ use regex::Regex;
 const SERVER: Token = Token(0);
 const WEBROOT: &str = "/webroot";
 
-struct TCPServer {
+struct WebServer {
     address: SocketAddr,
     connections: HashMap<usize, TcpStream>,
     next_connection_id: usize
 }
 
-impl TCPServer {
+impl WebServer {
     fn new(addr: &str) -> Self {
         let address = addr.parse().unwrap();
-        TCPServer {
+        WebServer {
             address,
             connections: HashMap::new(),
             next_connection_id: 1
@@ -67,7 +67,7 @@ impl TCPServer {
                                 let nbytes = stream.read(&mut buffer)?;
 
                                 if nbytes != 0 {
-                                    response = TCPServer::make_response(&buffer, &nbytes).unwrap();
+                                    response = WebServer::make_response(&buffer, &nbytes).unwrap();
                                     poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge()).unwrap();
                                 } else {
                                     self.connections.remove(&conn_id);
@@ -138,6 +138,6 @@ fn main() {
         eprintln!("Bad number of argments");
         std::process::exit(1);
     }
-    let mut server = TCPServer::new(&args[1]);
+    let mut server = WebServer::new(&args[1]);
     server.run().expect("Internal Server Error.");
 }
