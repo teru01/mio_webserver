@@ -37,6 +37,7 @@ impl TCPServer {
         poll.register(&server, SERVER, Ready::readable(), PollOpt::edge()).unwrap();
 
         let mut events = Events::with_capacity(1024);
+        let mut response = Vec::new();
 
         // イベントループ
         loop {
@@ -60,16 +61,22 @@ impl TCPServer {
 
                     Token(conn_id) => {
                         if let Some(stream) = self.connections.get_mut(&conn_id) {
-                            println!("conn_id: {}", conn_id);
-                            let mut buffer = [0u8; 512];
-                            let nbytes = stream.read(&mut buffer)?;
+                            if event.readiness().is_readable() {
+                                println!("conn_id: {}", conn_id);
+                                let mut buffer = [0u8; 512];
+                                let nbytes = stream.read(&mut buffer)?;
 
-                            if nbytes != 0 {
-                                let response = TCPServer::make_response(&buffer, &nbytes).unwrap();
+                                if nbytes != 0 {
+                                    response = TCPServer::make_response(&buffer, &nbytes).unwrap();
+                                    poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge()).unwrap();
+                                } else {
+                                    self.connections.remove(&conn_id);
+                                }
+                            } else if event.readiness().is_writable() {
                                 stream.write(&response)?;
                                 stream.flush()?;
+                                self.connections.remove(&conn_id);
                             }
-                            self.connections.remove(&conn_id);
                         }
                     }
                 }
