@@ -1,3 +1,5 @@
 /target
 **/*.rs.bk
-webroot
+webroot/*
+!webroot/index.html
+!webroot/sheep_icon.png
