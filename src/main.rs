@@ -85,7 +85,7 @@ impl WebServer {
     }
 
     fn make_response(buffer: &[u8], nbytes: &usize) -> Result<Vec<u8>, Error> {
-        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])").unwrap();
+        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*").unwrap();
         let captures = match http_pattern.captures(str::from_utf8(&buffer[..*nbytes]).unwrap()) {
             Some(cap) => cap,
             None => {
