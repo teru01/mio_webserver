@@ -13,8 +13,8 @@ then connect via telnet, nc or browser
 
 # Specification
 
-* Return the response as HTTP 1.0.
-* Accept only HTTP 1.0, 1.1.
+* Return responses as HTTP 1.0.
+* Accept only HTTP 1.0 or 1.1.
 * Only accept GET method.
-* Disconnect the connection when the request and the corresponding response are exchanged.
-* Security is not considered.（directory traversal etc）
+* Disconnect a connection when a request and the corresponding response are exchanged.
+* Security is not considered.（directory traversal etc.）
