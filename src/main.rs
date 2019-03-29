@@ -46,40 +46,49 @@ impl WebServer {
             for event in &events {
                 match event.token() {
                     SERVER => {
-                        let (stream, remote) = server.accept().expect("Failed to accept connection");
-                        println!("Connection from {}", &remote);
-
-                        let token = Token(self.next_connection_id);
-                        poll.register(&stream, token, Ready::readable(), PollOpt::edge()).unwrap();
-
-                        if let Some(_) = self.connections.insert(self.next_connection_id, stream){
-                            // HashMapは既存のキーで値が更新されると更新前の値を返す
-                            panic!("Failed to register connection");
-                        }
-                        self.next_connection_id += 1;
+                        self.connection_handler(&server, &poll);
                     }
 
                     Token(conn_id) => {
-                        if let Some(stream) = self.connections.get_mut(&conn_id) {
-                            if event.readiness().is_readable() {
-                                println!("conn_id: {}", conn_id);
-                                let mut buffer = [0u8; 512];
-                                let nbytes = stream.read(&mut buffer)?;
-
-                                if nbytes != 0 {
-                                    response = WebServer::make_response(&buffer, &nbytes).unwrap();
-                                    poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge()).unwrap();
-                                } else {
-                                    self.connections.remove(&conn_id);
-                                }
-                            } else if event.readiness().is_writable() {
-                                stream.write(&response)?;
-                                stream.flush()?;
-                                self.connections.remove(&conn_id);
-                            }
-                        }
+                        self.http_request_handler(conn_id, event, &poll, &mut response);
                     }
                 }
+            }
+        }
+    }
+
+    fn connection_handler(&mut self, server: &TcpListener, poll: &Poll) {
+        let (stream, remote) = server.accept().expect("Failed to accept connection");
+        println!("Connection from {}", &remote);
+
+        let token = Token(self.next_connection_id);
+        poll.register(&stream, token, Ready::readable(), PollOpt::edge()).unwrap();
+
+        if let Some(_) = self.connections.insert(self.next_connection_id, stream){
+            // HashMapは既存のキーで値が更新されると更新前の値を返す
+            panic!("Failed to register connection");
+        }
+        self.next_connection_id += 1;
+    }
+
+    fn http_request_handler(&mut self, conn_id: usize, event: Event, poll: &Poll, response: &mut Vec<u8>) {
+        if let Some(stream) = self.connections.get_mut(&conn_id) {
+            if event.readiness().is_readable() {
+                println!("conn_id: {}", conn_id);
+                let mut buffer = [0u8; 512];
+                let nbytes = stream.read(&mut buffer).expect("Failed to read");
+
+                if nbytes != 0 {
+                    *response = WebServer::make_response(&buffer, &nbytes).unwrap();
+                    poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge()).unwrap();
+                } else {
+                    self.connections.remove(&conn_id);
+                }
+
+            } else if event.readiness().is_writable() {
+                stream.write(&response).expect("Failed to write");
+                stream.flush().unwrap();
+                self.connections.remove(&conn_id);
             }
         }
     }
