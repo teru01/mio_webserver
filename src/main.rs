@@ -50,7 +50,7 @@ impl WebServer {
                     }
 
                     Token(conn_id) => {
-                        self.http_request_handler(conn_id, event, &poll, &mut response);
+                        self.http_handler(conn_id, event, &poll, &mut response);
                     }
                 }
             }
@@ -71,7 +71,7 @@ impl WebServer {
         self.next_connection_id += 1;
     }
 
-    fn http_request_handler(&mut self, conn_id: usize, event: Event, poll: &Poll, response: &mut Vec<u8>) {
+    fn http_handler(&mut self, conn_id: usize, event: Event, poll: &Poll, response: &mut Vec<u8>) {
         if let Some(stream) = self.connections.get_mut(&conn_id) {
             if event.readiness().is_readable() {
                 println!("conn_id: {}", conn_id);
