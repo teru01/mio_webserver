@@ -42,7 +42,7 @@ impl WebServer {
             &self.server_socket,
             SERVER,
             Ready::readable(),
-            PollOpt::edge(),
+            PollOpt::level(),
         )?;
 
         let mut events = Events::with_capacity(1024);
@@ -51,20 +51,33 @@ impl WebServer {
         // イベントループ
         loop {
             // 現在のスレッドをブロックしてイベントを待つ。
-            poll.poll(&mut events, None).unwrap();
+            match poll.poll(&mut events, None) {
+                Ok(_) => {},
+                Err(e) => {
+                    error!("{}", e);
+                    continue;
+                }
+            }
             for event in &events {
                 match event.token() {
                     SERVER => {
                         // コネクションの確立要求を処理
-                        let (stream, remote) = self.server_socket.accept()?;
+                        let (stream, remote) = match self.server_socket.accept() {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!("{}", e);
+                                continue;
+                            }
+                        };
                         debug!("Connection from {}", &remote);
                         // コネクションを監視対象に登録
-                        self.register_connection(&poll, stream)?;
+                        self.register_connection(&poll, stream).unwrap_or_else(|e| error!("{}", e));
                     }
 
                     Token(conn_id) => {
                         // コネクションを使ってパケットを送受信する
-                        self.http_handler(conn_id, event, &poll, &mut response)?;
+                        self.http_handler(conn_id, event, &poll, &mut response)
+                            .unwrap_or_else(|e| error!("{}", e));
                     }
                 }
             }
@@ -80,11 +93,15 @@ impl WebServer {
         stream: TcpStream,
     ) -> Result<(), failure::Error> {
         let token = Token(self.next_connection_id);
-        poll.register(&stream, token, Ready::readable(), PollOpt::edge())?;
+        poll.register(&stream, token, Ready::readable(), PollOpt::level())?;
 
-        if self.connections.insert(self.next_connection_id, stream).is_some() {
+        if self
+            .connections
+            .insert(self.next_connection_id, stream)
+            .is_some()
+        {
             // HashMapは既存のキーで値が更新されると更新前の値を返す
-            panic!("Connection ID is already exist.");
+            error!("Connection ID is already exist.");
         }
         self.next_connection_id += 1;
         Ok(())
@@ -106,14 +123,14 @@ impl WebServer {
             .ok_or_else(|| failure::err_msg("Failed to get connection."))?;
         if event.readiness().is_readable() {
             // ソケットから読み込み可能。
-            debug!("conn_id: {}", conn_id);
+            debug!("readable conn_id: {}", conn_id);
             let mut buffer = [0u8; 512];
             let nbytes = stream.read(&mut buffer)?;
 
             if nbytes != 0 {
                 *response = WebServer::make_response(&buffer[..nbytes])?;
                 // 書き込み可能状態を監視対象に入れる
-                poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge())?;
+                poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::level())?;
             } else {
                 // 通信終了
                 self.connections.remove(&conn_id);
@@ -121,6 +138,7 @@ impl WebServer {
             Ok(())
         } else if event.readiness().is_writable() {
             // ソケットに書き込み可能。
+            debug!("writable conn_id: {}", conn_id);
             stream.write_all(response)?;
             self.connections.remove(&conn_id);
             Ok(())
@@ -174,7 +192,6 @@ impl WebServer {
                 return WebServer::create_msg_from_code(200, None);
             }
         };
-
         let method = captures[1].to_string();
         let path = format!(
             "{}{}{}",
