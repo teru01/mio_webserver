@@ -4,15 +4,10 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::net::SocketAddr;
 use std::process;
 use std::{env, str};
 #[macro_use]
 extern crate log;
-mod error;
-use error::HttpParseError;
-#[macro_use]
-extern crate failure;
 
 const SERVER: Token = Token(0);
 const WEBROOT: &str = "/webroot";
@@ -87,7 +82,7 @@ impl WebServer {
         let token = Token(self.next_connection_id);
         poll.register(&stream, token, Ready::readable(), PollOpt::edge())?;
 
-        if let Some(_) = self.connections.insert(self.next_connection_id, stream) {
+        if self.connections.insert(self.next_connection_id, stream).is_some() {
             // HashMapは既存のキーで値が更新されると更新前の値を返す
             panic!("Connection ID is already exist.");
         }
@@ -116,14 +111,7 @@ impl WebServer {
             let nbytes = stream.read(&mut buffer)?;
 
             if nbytes != 0 {
-                match WebServer::parse_request(&buffer[..nbytes]) {
-                    Ok((method, path, _)) => {
-                        *response = WebServer::make_response(&method, &path)?;
-                    }
-                    Err(HttpParseError) => {
-                        // レスポンス作成
-                    }
-                };
+                *response = WebServer::make_response(&buffer[..nbytes])?;
                 // 書き込み可能状態を監視対象に入れる
                 poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge())?;
             } else {
@@ -141,26 +129,9 @@ impl WebServer {
         }
     }
 
-    fn parse_request(buffer: &[u8]) -> Result<(String, String, String), failure::Error> {
-        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*")?;
-        let captures = match http_pattern.captures(str::from_utf8(buffer)?) {
-            Some(cap) => cap,
-            None => {
-                return Err(HttpParseError{status_code: 400});
-            }
-        };
-
-        let method = captures[1].to_string();
-        let path = format!(
-            "{}{}{}",
-            env::current_dir()?.display(),
-            WEBROOT,
-            &captures[2]
-        );
-        let version = captures[3].to_string();
-        Ok((method, path, version))
-    }
-
+    /**
+     * HTTPステータスコードからメッセージを生成する。
+     */
     fn create_msg_from_code(
         status_code: u16,
         msg: Option<Vec<u8>>,
@@ -171,7 +142,7 @@ impl WebServer {
                                   Server: mio webserver\r\n\r\n"
                     .to_string()
                     .into_bytes();
-                if let Some(msg) = msg {
+                if let Some(mut msg) = msg {
                     header.append(&mut msg);
                 }
                 Ok(header)
@@ -193,9 +164,26 @@ impl WebServer {
     }
 
     /**
-     * レスポンスをバイト列で作成します。
+     * レスポンスをバイト列で作成して返す
      */
-    fn make_response(method: &str, path: &str) -> Result<Vec<u8>, failure::Error> {
+    fn make_response(buffer: &[u8]) -> Result<Vec<u8>, failure::Error> {
+        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*")?;
+        let captures = match http_pattern.captures(str::from_utf8(buffer)?) {
+            Some(cap) => cap,
+            None => {
+                return WebServer::create_msg_from_code(200, None);
+            }
+        };
+
+        let method = captures[1].to_string();
+        let path = format!(
+            "{}{}{}",
+            env::current_dir()?.display(),
+            WEBROOT,
+            &captures[2]
+        );
+        let _version = captures[3].to_string();
+
         if method == "GET" {
             let file = match File::open(path) {
                 Ok(file) => file,
@@ -208,10 +196,10 @@ impl WebServer {
             let mut reader = BufReader::new(file);
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf)?;
-            return WebServer::create_msg_from_code(200, Some(buf));
+            WebServer::create_msg_from_code(200, Some(buf))
         } else {
             // サポートしていないHTTPメソッド
-            return WebServer::create_msg_from_code(501, None);
+            WebServer::create_msg_from_code(501, None)
         }
     }
 }
