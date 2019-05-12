@@ -1,20 +1,24 @@
+use mio::tcp::{TcpListener, TcpStream};
+use mio::*;
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::net::SocketAddr;
+use std::process;
 use std::{env, str};
-
-use mio::tcp::{TcpListener, TcpStream};
-use mio::*;
-use regex::Regex;
 #[macro_use]
 extern crate log;
+mod error;
+use error::HttpParseError;
+#[macro_use]
+extern crate failure;
 
 const SERVER: Token = Token(0);
 const WEBROOT: &str = "/webroot";
 
 struct WebServer {
-    address: SocketAddr,
+    server_socket: TcpListener,
     connections: HashMap<usize, TcpStream>,
     next_connection_id: usize,
 }
@@ -25,8 +29,9 @@ impl WebServer {
      */
     fn new(addr: &str) -> Result<Self, failure::Error> {
         let address = addr.parse()?;
+        let server_socket = TcpListener::bind(&address)?;
         Ok(WebServer {
-            address,
+            server_socket,
             connections: HashMap::new(),
             next_connection_id: 1,
         })
@@ -36,23 +41,30 @@ impl WebServer {
      * サーバを起動する。
      */
     fn run(&mut self) -> Result<(), failure::Error> {
-        let server = TcpListener::bind(&self.address)?;
         let poll = Poll::new()?;
-
-        poll.register(&server, SERVER, Ready::readable(), PollOpt::edge())?;
+        // サーバーソケットの状態を監視対象に登録する。
+        poll.register(
+            &self.server_socket,
+            SERVER,
+            Ready::readable(),
+            PollOpt::edge(),
+        )?;
 
         let mut events = Events::with_capacity(1024);
         let mut response = Vec::new();
 
         // イベントループ
         loop {
-            //現在のスレッドをブロックしてイベントを待つ。
+            // 現在のスレッドをブロックしてイベントを待つ。
             poll.poll(&mut events, None).unwrap();
             for event in &events {
                 match event.token() {
                     SERVER => {
                         // コネクションの確立要求を処理
-                        self.connection_handler(&server, &poll)?;
+                        let (stream, remote) = self.server_socket.accept()?;
+                        debug!("Connection from {}", &remote);
+                        // コネクションを監視対象に登録
+                        self.register_connection(&poll, stream)?;
                     }
 
                     Token(conn_id) => {
@@ -67,14 +79,11 @@ impl WebServer {
     /**
      * コネクション確立要求の処理
      */
-    fn connection_handler(
+    fn register_connection(
         &mut self,
-        server: &TcpListener,
         poll: &Poll,
+        stream: TcpStream,
     ) -> Result<(), failure::Error> {
-        let (stream, remote) = server.accept()?;
-        debug!("Connection from {}", &remote);
-
         let token = Token(self.next_connection_id);
         poll.register(&stream, token, Ready::readable(), PollOpt::edge())?;
 
@@ -107,7 +116,14 @@ impl WebServer {
             let nbytes = stream.read(&mut buffer)?;
 
             if nbytes != 0 {
-                *response = WebServer::make_response(&buffer, nbytes).unwrap();
+                match WebServer::parse_request(&buffer[..nbytes]) {
+                    Ok((method, path, _)) => {
+                        *response = WebServer::make_response(&method, &path)?;
+                    }
+                    Err(HttpParseError) => {
+                        // レスポンス作成
+                    }
+                };
                 // 書き込み可能状態を監視対象に入れる
                 poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge())?;
             } else {
@@ -121,64 +137,81 @@ impl WebServer {
             self.connections.remove(&conn_id);
             Ok(())
         } else {
-            Err(failure::err_msg("undefined event."))
+            Err(failure::err_msg("Undefined event."))
+        }
+    }
+
+    fn parse_request(buffer: &[u8]) -> Result<(String, String, String), failure::Error> {
+        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*")?;
+        let captures = match http_pattern.captures(str::from_utf8(buffer)?) {
+            Some(cap) => cap,
+            None => {
+                return Err(HttpParseError{status_code: 400});
+            }
+        };
+
+        let method = captures[1].to_string();
+        let path = format!(
+            "{}{}{}",
+            env::current_dir()?.display(),
+            WEBROOT,
+            &captures[2]
+        );
+        let version = captures[3].to_string();
+        Ok((method, path, version))
+    }
+
+    fn create_msg_from_code(
+        status_code: u16,
+        msg: Option<Vec<u8>>,
+    ) -> Result<Vec<u8>, failure::Error> {
+        match status_code {
+            200 => {
+                let mut header = "HTTP/1.0 200 OK\r\n\
+                                  Server: mio webserver\r\n\r\n"
+                    .to_string()
+                    .into_bytes();
+                if let Some(msg) = msg {
+                    header.append(&mut msg);
+                }
+                Ok(header)
+            }
+            400 => Ok("HTTP/1.0 400 Bad Request\r\n\
+                       Server: mio webserver\r\n\r\n"
+                .to_string()
+                .into_bytes()),
+            404 => Ok("HTTP/1.0 404 Not Found\r\n\
+                       Server: mio webserver\r\n\r\n"
+                .to_string()
+                .into_bytes()),
+            501 => Ok("HTTP/1.0 501 Not Implemented\r\n\
+                       Server: mio webserver\r\n\r\n"
+                .to_string()
+                .into_bytes()),
+            _ => Err(failure::err_msg("Undefined status code.")),
         }
     }
 
     /**
      * レスポンスをバイト列で作成します。
      */
-    fn make_response(buffer: &[u8], nbytes: usize) -> Result<Vec<u8>, failure::Error> {
-        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*")?;
-        let captures = match http_pattern.captures(str::from_utf8(&buffer[..nbytes])?) {
-            Some(cap) => cap,
-            None => {
-                let mut response = Vec::new();
-                response.append(&mut "HTTP/1.0 400 Bad Request\r\n".to_string().into_bytes());
-                response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
-                response.append(&mut "\r\n".to_string().into_bytes());
-                return Ok(response);
-            }
-        };
-
-        let method = captures.get(1).unwrap().as_str();
-        let path = &format!(
-            "{}{}{}",
-            env::current_dir()?.display(),
-            WEBROOT,
-            captures.get(2).unwrap().as_str()
-        );
-        let _version = captures.get(3).unwrap().as_str();
-
+    fn make_response(method: &str, path: &str) -> Result<Vec<u8>, failure::Error> {
         if method == "GET" {
             let file = match File::open(path) {
                 Ok(file) => file,
                 Err(_) => {
                     // パーミッションエラーなどもここに含まれるが、
                     // 簡略化のためnot foundにしている
-                    let mut response = Vec::new();
-                    response.append(&mut "HTTP/1.0 404 Not Found\r\n".to_string().into_bytes());
-                    response.append(&mut "Server: mio webserver\r\n\r\n".to_string().into_bytes());
-                    return Ok(response);
+                    return WebServer::create_msg_from_code(404, None);
                 }
             };
             let mut reader = BufReader::new(file);
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf)?;
-
-            let mut response = Vec::new();
-            response.append(&mut "HTTP/1.0 200 OK\r\n".to_string().into_bytes());
-            response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
-            response.append(&mut "\r\n".to_string().into_bytes());
-            response.append(&mut buf);
-            return Ok(response);
+            return WebServer::create_msg_from_code(200, Some(buf));
         } else {
             // サポートしていないHTTPメソッド
-            let mut response = Vec::new();
-            response.append(&mut "HTTP/1.0 501 Not Implemented\r\n".to_string().into_bytes());
-            response.append(&mut "Server: mio webserver\r\n".to_string().into_bytes());
-            response.append(&mut "\r\n".to_string().into_bytes());
-            return Ok(response);
+            return WebServer::create_msg_from_code(501, None);
         }
     }
 }
@@ -188,8 +221,8 @@ fn main() {
     env_logger::init();
     let args: Vec<String> = env::args().collect();
     if args.len() != 2 {
-        eprintln!("Bad number of argments");
-        std::process::exit(1);
+        error!("Bad number of argments.");
+        process::exit(1);
     }
     let mut server = WebServer::new(&args[1]).unwrap_or_else(|e| {
         error!("{}", e);
