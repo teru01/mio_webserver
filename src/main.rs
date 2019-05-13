@@ -1,5 +1,5 @@
 use mio::tcp::{TcpListener, TcpStream};
-use mio::*;
+use mio::{Event, Events, Poll, PollOpt, Ready, Token};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
@@ -52,7 +52,7 @@ impl WebServer {
         loop {
             // 現在のスレッドをブロックしてイベントを待つ。
             match poll.poll(&mut events, None) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
                     error!("{}", e);
                     continue;
@@ -71,7 +71,8 @@ impl WebServer {
                         };
                         debug!("Connection from {}", &remote);
                         // コネクションを監視対象に登録
-                        self.register_connection(&poll, stream).unwrap_or_else(|e| error!("{}", e));
+                        self.register_connection(&poll, stream)
+                            .unwrap_or_else(|e| error!("{}", e));
                     }
 
                     Token(conn_id) => {
@@ -128,7 +129,7 @@ impl WebServer {
             let nbytes = stream.read(&mut buffer)?;
 
             if nbytes != 0 {
-                *response = WebServer::make_response(&buffer[..nbytes])?;
+                *response = make_response(&buffer[..nbytes])?;
                 // 書き込み可能状態を監視対象に入れる
                 poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::level())?;
             } else {
@@ -147,78 +148,6 @@ impl WebServer {
         }
     }
 
-    /**
-     * HTTPステータスコードからメッセージを生成する。
-     */
-    fn create_msg_from_code(
-        status_code: u16,
-        msg: Option<Vec<u8>>,
-    ) -> Result<Vec<u8>, failure::Error> {
-        match status_code {
-            200 => {
-                let mut header = "HTTP/1.0 200 OK\r\n\
-                                  Server: mio webserver\r\n\r\n"
-                    .to_string()
-                    .into_bytes();
-                if let Some(mut msg) = msg {
-                    header.append(&mut msg);
-                }
-                Ok(header)
-            }
-            400 => Ok("HTTP/1.0 400 Bad Request\r\n\
-                       Server: mio webserver\r\n\r\n"
-                .to_string()
-                .into_bytes()),
-            404 => Ok("HTTP/1.0 404 Not Found\r\n\
-                       Server: mio webserver\r\n\r\n"
-                .to_string()
-                .into_bytes()),
-            501 => Ok("HTTP/1.0 501 Not Implemented\r\n\
-                       Server: mio webserver\r\n\r\n"
-                .to_string()
-                .into_bytes()),
-            _ => Err(failure::err_msg("Undefined status code.")),
-        }
-    }
-
-    /**
-     * レスポンスをバイト列で作成して返す
-     */
-    fn make_response(buffer: &[u8]) -> Result<Vec<u8>, failure::Error> {
-        let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*")?;
-        let captures = match http_pattern.captures(str::from_utf8(buffer)?) {
-            Some(cap) => cap,
-            None => {
-                return WebServer::create_msg_from_code(200, None);
-            }
-        };
-        let method = captures[1].to_string();
-        let path = format!(
-            "{}{}{}",
-            env::current_dir()?.display(),
-            WEBROOT,
-            &captures[2]
-        );
-        let _version = captures[3].to_string();
-
-        if method == "GET" {
-            let file = match File::open(path) {
-                Ok(file) => file,
-                Err(_) => {
-                    // パーミッションエラーなどもここに含まれるが、
-                    // 簡略化のためnot foundにしている
-                    return WebServer::create_msg_from_code(404, None);
-                }
-            };
-            let mut reader = BufReader::new(file);
-            let mut buf = Vec::new();
-            reader.read_to_end(&mut buf)?;
-            WebServer::create_msg_from_code(200, Some(buf))
-        } else {
-            // サポートしていないHTTPメソッド
-            WebServer::create_msg_from_code(501, None)
-        }
-    }
 }
 
 fn main() {
@@ -237,4 +166,78 @@ fn main() {
         error!("{}", e);
         panic!();
     });
+}
+
+
+/**
+ * HTTPステータスコードからメッセージを生成する。
+ */
+fn create_msg_from_code(
+    status_code: u16,
+    msg: Option<Vec<u8>>,
+) -> Result<Vec<u8>, failure::Error> {
+    match status_code {
+        200 => {
+            let mut header = "HTTP/1.0 200 OK\r\n\
+                                Server: mio webserver\r\n\r\n"
+                .to_string()
+                .into_bytes();
+            if let Some(mut msg) = msg {
+                header.append(&mut msg);
+            }
+            Ok(header)
+        }
+        400 => Ok("HTTP/1.0 400 Bad Request\r\n\
+                    Server: mio webserver\r\n\r\n"
+            .to_string()
+            .into_bytes()),
+        404 => Ok("HTTP/1.0 404 Not Found\r\n\
+                    Server: mio webserver\r\n\r\n"
+            .to_string()
+            .into_bytes()),
+        501 => Ok("HTTP/1.0 501 Not Implemented\r\n\
+                    Server: mio webserver\r\n\r\n"
+            .to_string()
+            .into_bytes()),
+        _ => Err(failure::err_msg("Undefined status code.")),
+    }
+}
+
+/**
+ * レスポンスをバイト列で作成して返す
+ */
+fn make_response(buffer: &[u8]) -> Result<Vec<u8>, failure::Error> {
+    let http_pattern = Regex::new(r"(.*) (.*) HTTP/1.([0-1])\r\n.*")?;
+    let captures = match http_pattern.captures(str::from_utf8(buffer)?) {
+        Some(cap) => cap,
+        None => {
+            return create_msg_from_code(200, None);
+        }
+    };
+    let method = captures[1].to_string();
+    let path = format!(
+        "{}{}{}",
+        env::current_dir()?.display(),
+        WEBROOT,
+        &captures[2]
+    );
+    let _version = captures[3].to_string();
+
+    if method == "GET" {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(_) => {
+                // パーミッションエラーなどもここに含まれるが、
+                // 簡略化のためnot foundにしている
+                return create_msg_from_code(404, None);
+            }
+        };
+        let mut reader = BufReader::new(file);
+        let mut buf = Vec::new();
+        reader.read_to_end(&mut buf)?;
+        create_msg_from_code(200, Some(buf))
+    } else {
+        // サポートしていないHTTPメソッド
+        create_msg_from_code(501, None)
+    }
 }
