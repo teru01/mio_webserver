@@ -13,7 +13,7 @@ const SERVER: Token = Token(0);
 const WEBROOT: &str = "/webroot";
 
 struct WebServer {
-    server_socket: TcpListener,
+    listening_socket: TcpListener,
     connections: HashMap<usize, TcpStream>,
     next_connection_id: usize,
 }
@@ -24,9 +24,9 @@ impl WebServer {
      */
     fn new(addr: &str) -> Result<Self, failure::Error> {
         let address = addr.parse()?;
-        let server_socket = TcpListener::bind(&address)?;
+        let listening_socket = TcpListener::bind(&address)?;
         Ok(WebServer {
-            server_socket,
+            listening_socket,
             connections: HashMap::new(),
             next_connection_id: 1,
         })
@@ -39,10 +39,10 @@ impl WebServer {
         let poll = Poll::new()?;
         // サーバーソケットの状態を監視対象に登録する。
         poll.register(
-            &self.server_socket,
+            &self.listening_socket,
             SERVER,
             Ready::readable(),
-            PollOpt::level(),
+            PollOpt::edge(),
         )?;
 
         let mut events = Events::with_capacity(1024);
@@ -61,22 +61,27 @@ impl WebServer {
             for event in &events {
                 match event.token() {
                     SERVER => {
-                        // コネクションの確立要求を処理
-                        let (stream, remote) = match self.server_socket.accept() {
-                            Ok(t) => t,
-                            Err(e) => {
-                                error!("{}", e);
-                                continue;
-                            }
-                        };
-                        debug!("Connection from {}", &remote);
-                        // コネクションを監視対象に登録
-                        self.register_connection(&poll, stream)
-                            .unwrap_or_else(|e| error!("{}", e));
+                        // リスニングソケットの読み込み準備完了イベントが発生
+                        loop {
+                            let (stream, remote) = match self.listening_socket.accept() {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                                        break;
+                                    }
+                                    error!("{}", e);
+                                    continue;
+                                }
+                            };
+                            debug!("Connection from {}", &remote);
+                            // コネクションを監視対象に登録
+                            self.register_connection(&poll, stream)
+                                .unwrap_or_else(|e| error!("{}", e));
+                        }
                     }
 
                     Token(conn_id) => {
-                        // コネクションを使ってパケットを送受信する
+                        // 接続済みソケットのイベントが発生
                         self.http_handler(conn_id, event, &poll, &mut response)
                             .unwrap_or_else(|e| error!("{}", e));
                     }
@@ -94,7 +99,7 @@ impl WebServer {
         stream: TcpStream,
     ) -> Result<(), failure::Error> {
         let token = Token(self.next_connection_id);
-        poll.register(&stream, token, Ready::readable(), PollOpt::level())?;
+        poll.register(&stream, token, Ready::readable(), PollOpt::edge())?;
 
         if self
             .connections
@@ -125,13 +130,13 @@ impl WebServer {
         if event.readiness().is_readable() {
             // ソケットから読み込み可能。
             debug!("readable conn_id: {}", conn_id);
-            let mut buffer = [0u8; 512];
+            let mut buffer = [0u8; 512]; //TODO httpのサイズ
             let nbytes = stream.read(&mut buffer)?;
 
             if nbytes != 0 {
                 *response = make_response(&buffer[..nbytes])?;
                 // 書き込み可能状態を監視対象に入れる
-                poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::level())?;
+                poll.reregister(stream, Token(conn_id), Ready::writable(), PollOpt::edge())?;
             } else {
                 // 通信終了
                 self.connections.remove(&conn_id);
