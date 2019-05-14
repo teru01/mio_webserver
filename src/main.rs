@@ -13,7 +13,7 @@ const SERVER: Token = Token(0);
 const WEBROOT: &str = "/webroot";
 
 struct WebServer {
-    server_socket: TcpListener,
+    listening_socket: TcpListener,
     connections: HashMap<usize, TcpStream>,
     next_connection_id: usize,
 }
@@ -24,9 +24,9 @@ impl WebServer {
      */
     fn new(addr: &str) -> Result<Self, failure::Error> {
         let address = addr.parse()?;
-        let server_socket = TcpListener::bind(&address)?;
+        let listening_socket = TcpListener::bind(&address)?;
         Ok(WebServer {
-            server_socket,
+            listening_socket,
             connections: HashMap::new(),
             next_connection_id: 1,
         })
@@ -39,7 +39,7 @@ impl WebServer {
         let poll = Poll::new()?;
         // サーバーソケットの状態を監視対象に登録する。
         poll.register(
-            &self.server_socket,
+            &self.listening_socket,
             SERVER,
             Ready::readable(),
             PollOpt::level(),
@@ -61,8 +61,8 @@ impl WebServer {
             for event in &events {
                 match event.token() {
                     SERVER => {
-                        // コネクションの確立要求を処理
-                        let (stream, remote) = match self.server_socket.accept() {
+                        // リスニングソケットの読み込み準備完了イベントが発生
+                        let (stream, remote) = match self.listening_socket.accept() {
                             Ok(t) => t,
                             Err(e) => {
                                 error!("{}", e);
@@ -76,7 +76,7 @@ impl WebServer {
                     }
 
                     Token(conn_id) => {
-                        // コネクションを使ってパケットを送受信する
+                        // 接続済みソケットのイベントが発生
                         self.http_handler(conn_id, event, &poll, &mut response)
                             .unwrap_or_else(|e| error!("{}", e));
                     }
@@ -125,7 +125,7 @@ impl WebServer {
         if event.readiness().is_readable() {
             // ソケットから読み込み可能。
             debug!("readable conn_id: {}", conn_id);
-            let mut buffer = [0u8; 512];
+            let mut buffer = [0u8; 512]; //TODO httpのサイズ
             let nbytes = stream.read(&mut buffer)?;
 
             if nbytes != 0 {
