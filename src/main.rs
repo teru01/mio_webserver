@@ -3,7 +3,7 @@ use mio::{Event, Events, Poll, PollOpt, Ready, Token};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, ErrorKind, Read, Write};
 use std::process;
 use std::{env, str};
 #[macro_use]
@@ -24,6 +24,7 @@ impl WebServer {
      */
     fn new(addr: &str) -> Result<Self, failure::Error> {
         let address = addr.parse()?;
+        // デフォルトでノンブロッキングモードのリスニングソケットが生成される。
         let listening_socket = TcpListener::bind(&address)?;
         Ok(WebServer {
             listening_socket,
@@ -66,7 +67,7 @@ impl WebServer {
                             let (stream, remote) = match self.listening_socket.accept() {
                                 Ok(t) => t,
                                 Err(e) => {
-                                    if e.kind() == std::io::ErrorKind::WouldBlock {
+                                    if e.kind() == ErrorKind::WouldBlock {
                                         break;
                                     }
                                     error!("{}", e);
@@ -152,7 +153,6 @@ impl WebServer {
             Err(failure::err_msg("Undefined event."))
         }
     }
-
 }
 
 fn main() {
@@ -173,18 +173,14 @@ fn main() {
     });
 }
 
-
 /**
  * HTTPステータスコードからメッセージを生成する。
  */
-fn create_msg_from_code(
-    status_code: u16,
-    msg: Option<Vec<u8>>,
-) -> Result<Vec<u8>, failure::Error> {
+fn create_msg_from_code(status_code: u16, msg: Option<Vec<u8>>) -> Result<Vec<u8>, failure::Error> {
     match status_code {
         200 => {
             let mut header = "HTTP/1.0 200 OK\r\n\
-                                Server: mio webserver\r\n\r\n"
+                              Server: mio webserver\r\n\r\n"
                 .to_string()
                 .into_bytes();
             if let Some(mut msg) = msg {
@@ -193,15 +189,15 @@ fn create_msg_from_code(
             Ok(header)
         }
         400 => Ok("HTTP/1.0 400 Bad Request\r\n\
-                    Server: mio webserver\r\n\r\n"
+                   Server: mio webserver\r\n\r\n"
             .to_string()
             .into_bytes()),
         404 => Ok("HTTP/1.0 404 Not Found\r\n\
-                    Server: mio webserver\r\n\r\n"
+                   Server: mio webserver\r\n\r\n"
             .to_string()
             .into_bytes()),
         501 => Ok("HTTP/1.0 501 Not Implemented\r\n\
-                    Server: mio webserver\r\n\r\n"
+                   Server: mio webserver\r\n\r\n"
             .to_string()
             .into_bytes()),
         _ => Err(failure::err_msg("Undefined status code.")),
